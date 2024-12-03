@@ -10,566 +10,283 @@
 ////////////////////////////////////////////////////////////
 // STEAM P2P SESSIONS - Unreal 5.5 + Steamworks SDK 1.57 //
 //////////////////////////////////////////////////////////
-#include "SteamInitializer.h"
-#include "steam/steam_api.h"
-#include "OnlineSessionSettings.h"
-#include "OnlineSubsystem.h"
-#include "OnlineSubsystemUtils.h"
-#include "Net/UnrealNetwork.h"
-#include "SteamPlayerController.h"
-#include "Interfaces/OnlineSessionInterface.h"
-#include "Online/OnlineSessionNames.h"
-bool bSteamInitialized = false;
-//////////////////////////////////////////
-// 1. Steam Initialization / Additions //
-/////////////////////////////////////////////
-// -1.1 Steam initializer                 //
-// -1.2 Steam shutdown                   //
-// -1.3 Check if steam is initialized   //
-// -1.4 Register the player to session //
-////////////////////////////////////////
-// - 1.1 - //
-void USteamInitializer::InitializeSteam()
+// HOW TO USE? //
+/////////////////////////////////////////////////////////////////////////////////////////////////////////
+// 1. It is game instance class                                                                       //
+// 2. Create BP, In all classes find " SteamMultiplayer "                                            //
+// 3. Initialize SteamAPI using EventInit                                                           //
+// 4. Shutdown SteamAPI using EventShutdown                                                        //
+// 5. Go to project settings -> Maps and modes -> Gameinstance class -> Select created blueprint  //
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// INCLUDE //
+////////////
+#include "SteamMultiplayer.h"
+//////////////////////////
+// Constructor - Notes //
+////////////////////////////////////////////////////////////////////////////////////////
+// 1. No need to initialize Steam callbacks explicitly, STEAM_CALLBACK handles this. //
+//////////////////////////////////////////////////////////////////////////////////////
+USteamMultiplayer::USteamMultiplayer()
+    : bIsHost(false), LobbyIDString("")
 {
-    // Prevent reinitialization if Steam is already initialized
-    if (bSteamInitialized)
+}
+/////////////////////////
+// 1. Basic Functions //
+///////////////////////////////////////////////
+// 1.1 - Initialize SteamAPI                //
+// 1.2 - Shutdown SteamAPI                 //
+// 1.3 - Check if SteamAPI is initialized //
+///////////////////////////////////////////
+// - 1.1 - //
+void USteamMultiplayer::InitializeSteam()
+{
+    if (SteamAPI_IsSteamRunning())
     {
-        UE_LOG(LogTemp, Warning, TEXT("Steam is already initialized. Skipping reinitialization."));
+        UE_LOG(LogTemp, Warning, TEXT("Steam is already initialized."));
         return;
     }
 
-    // Ensure the OnlineSubsystem is available
-    IOnlineSubsystem* OnlineSubsystemInstance = IOnlineSubsystem::Get();
-    if (!OnlineSubsystemInstance)
-    {
-        UE_LOG(LogTemp, Error, TEXT("OnlineSubsystem is unavailable! Make sure it is configured correctly in your project settings."));
-        return;
-    }
-
-    // Attempt to initialize the Steam API
     if (SteamAPI_Init())
     {
-        bSteamInitialized = true;
-        UE_LOG(LogTemp, Warning, TEXT("Steam API successfully initialized."));
+        UE_LOG(LogTemp, Log, TEXT("Steam API initialized successfully."));
 
-        // Log details about the local Steam user (optional)
-        if (SteamUser())
+        FString SteamUsername = UTF8_TO_TCHAR(SteamFriends()->GetPersonaName());
+        uint64 SteamID = SteamUser()->GetSteamID().ConvertToUint64();
+        UE_LOG(LogTemp, Log, TEXT("Logged into Steam as: %s (SteamID: %llu)"), *SteamUsername, SteamID);
+
+        if (SteamMatchmaking())
         {
-            FString SteamUsername = UTF8_TO_TCHAR(SteamFriends()->GetPersonaName());
-            uint64 SteamID = SteamUser()->GetSteamID().ConvertToUint64();
-            UE_LOG(LogTemp, Log, TEXT("Logged into Steam as: %s (SteamID: %llu)"), *SteamUsername, SteamID);
+            UE_LOG(LogTemp, Log, TEXT("Steam Matchmaking is available."));
         }
         else
         {
-            UE_LOG(LogTemp, Warning, TEXT("SteamUser or SteamFriends is unavailable. Steam user details will not be accessible."));
+            UE_LOG(LogTemp, Warning, TEXT("Steam Matchmaking is unavailable."));
         }
     }
     else
     {
-        UE_LOG(LogTemp, Error, TEXT("Failed to initialize Steam API! Ensure Steam is running, and the project is properly configured for Steam."));
+        UE_LOG(LogTemp, Error, TEXT("Failed to initialize Steam API!"));
     }
 }
 // - 1.2 - //
-void USteamInitializer::ShutdownSteam()
+void USteamMultiplayer::ShutdownSteam()
 {
     SteamAPI_Shutdown();
+    UE_LOG(LogTemp, Log, TEXT("Steam API shut down."));
 }
 // - 1.3 - //
-bool USteamInitializer::IsSteamInitialized() const
+bool USteamMultiplayer::IsSteamInitialized() const
 {
     return SteamAPI_IsSteamRunning();
 }
-// - 1.4 -//
-void USteamInitializer::RegisterPlayer(FName SessionName)
-{
-    IOnlineSubsystem* OnlineSubsystem = IOnlineSubsystem::Get();
-    if (!OnlineSubsystem)
-    {
-        UE_LOG(LogTemp, Error, TEXT("OnlineSubsystem not available! Cannot register player."));
-        return;
-    }
-
-    IOnlineSessionPtr SessionInterface = OnlineSubsystem->GetSessionInterface();
-    if (!SessionInterface.IsValid())
-    {
-        UE_LOG(LogTemp, Error, TEXT("Session interface is not valid! Cannot register player."));
-        return;
-    }
-
-    ULocalPlayer* LocalPlayer = GetWorld()->GetFirstLocalPlayerFromController();
-    if (!LocalPlayer)
-    {
-        UE_LOG(LogTemp, Error, TEXT("LocalPlayer is null! Cannot register player."));
-        return;
-    }
-
-    FUniqueNetIdRepl PlayerId = LocalPlayer->GetPreferredUniqueNetId();
-    if (!PlayerId.IsValid())
-    {
-        UE_LOG(LogTemp, Error, TEXT("PlayerId is invalid! Cannot register player."));
-        return;
-    }
-
-    // Register the local player with the session
-    if (SessionInterface->RegisterPlayer(SessionName, *PlayerId.GetUniqueNetId(), false))
-    {
-        UE_LOG(LogTemp, Log, TEXT("Player registered successfully for session: %s"), *SessionName.ToString());
-    }
-    else
-    {
-        UE_LOG(LogTemp, Error, TEXT("Failed to register player for session: %s"), *SessionName.ToString());
-    }
-}
-/////////////////////////////
-// 2. Pre-lobby mechanics //
-//////////////////////////////////////////
-// -2.1 Hosting/Creating Session       //
-// -2.2 Session Create Callback       //    
-// -2.3 Find Games                   //
-// -2.4 Sessions search callback    //
-// -2.5 Array of found sessions    //
-// -2.6 Join the specified game   //
-// -2.7 Join game callback       //
-//////////////////////////////////
+//////////////////////
+// 2. Hosting Game //
+/////////////////////////////////////////////////
+// 2.1 - Host a game using Steam Matchmaking  //
+// 2.2 - Callback: Lobby created             //
+// 2.3 - // Callback: Lobby entered         //
+/////////////////////////////////////////////
 // - 2.1 - //
-void USteamInitializer::HostServer(int32 MaxPlayers, FString TargetMap)
+void USteamMultiplayer::HostGameWithSteamMatchmaking()
 {
-    IOnlineSubsystem* OnlineSubsystemInstance = IOnlineSubsystem::Get();
-    if (OnlineSubsystemInstance)
+    if (!SteamAPI_IsSteamRunning())
     {
-        // Create session settings
-        FOnlineSessionSettings SessionSettings;
-        SessionSettings.NumPublicConnections = MaxPlayers; // Number of players allowed
-        SessionSettings.NumPrivateConnections = 0; // Private slots (if any)
-        SessionSettings.bIsLANMatch = false; // Use Steam instead of LAN
-        SessionSettings.bShouldAdvertise = true; // Make the session visible
-        SessionSettings.bUsesPresence = true; // Enable presence for Steam
-        SessionSettings.bUseLobbiesIfAvailable = true; // Use Steam lobbies if possible
-        SessionSettings.bAllowJoinInProgress = true; // Allow players to join mid-game
-        SessionSettings.bAllowJoinViaPresence = true; // Allow joining via friends list
-        SessionSettings.bIsDedicated = false; // Peer-to-peer setup
-
-        // Add custom key-value pair for filtering
-        SessionSettings.Set(FName("GameKey"), FString("urbanshadows"), EOnlineDataAdvertisementType::ViaOnlineService);
-        SessionSettings.Set(FName("MapName"), TargetMap, EOnlineDataAdvertisementType::ViaOnlineService);
-        // Set the unique session ID (or game key)
-        FString UniqueSessionID = FGuid::NewGuid().ToString();
-        SessionSettings.Set(FName("GameSessionID"), UniqueSessionID, EOnlineDataAdvertisementType::ViaOnlineService);
-        GameSessionID = UniqueSessionID;
-        // Session Name
-        FString UniqueSessionName = FGuid::NewGuid().ToString();
-        FName SessionName(*UniqueSessionName);
-        SessionSettings.Set(FName("SESSION_NAME"), UniqueSessionName, EOnlineDataAdvertisementType::ViaOnlineService);
-        RandomName = UniqueSessionName;
-
-
-        IOnlineSessionPtr SessionInterface = OnlineSubsystemInstance->GetSessionInterface();
-        if (SessionInterface.IsValid())
-        {
-            // Bind the callback for session creation completion
-            SessionInterface->AddOnCreateSessionCompleteDelegate_Handle(
-                FOnCreateSessionCompleteDelegate::CreateUObject(this, &USteamInitializer::OnCreateSessionComplete)
-            );
-
-            // Attempt to create the session
-            bool bSessionCreated = SessionInterface->CreateSession(0, SessionName, SessionSettings);
-            if (!bSessionCreated)
-            {
-                UE_LOG(LogTemp, Error, TEXT("Failed to initiate CreateSession."));
-            }
-        }
-        else
-        {
-            UE_LOG(LogTemp, Error, TEXT("SessionInterface is invalid!"));
-        }
+        UE_LOG(LogTemp, Error, TEXT("Steam API is not initialized."));
+        return;
     }
-    else
+
+    ISteamMatchmaking* SteamMatchmakingTemp = SteamMatchmaking();
+    if (!SteamMatchmakingTemp)
     {
-        UE_LOG(LogTemp, Error, TEXT("OnlineSubsystem is not available!"));
+        UE_LOG(LogTemp, Error, TEXT("Steam Matchmaking interface is not available!"));
+        return;
     }
+
+    int32 MaxPlayers = 4;
+    int32 LobbyVisibility = k_ELobbyTypePublic;
+
+    SteamAPICall_t CreateLobbyCall = SteamMatchmakingTemp->CreateLobby((ELobbyType)LobbyVisibility, MaxPlayers);
+    UE_LOG(LogTemp, Log, TEXT("Lobby creation requested with max players %d"), MaxPlayers);
+
+    FString LobbyMap = "/Game/Maps/Map_Lobby";
+    SteamMatchmakingTemp->SetLobbyData(CreateLobbyCall, "MapName", TCHAR_TO_UTF8(*LobbyMap));
 }
 // - 2.2 - //
-void USteamInitializer::OnCreateSessionComplete(FName SessionName, bool bWasSuccessful)
+void USteamMultiplayer::OnLobbyCreated(LobbyCreated_t* pCallback)
 {
-    if (bWasSuccessful)
+    if (pCallback->m_eResult != k_EResultOK)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Session created successfully: %s"), *SessionName.ToString());
+        UE_LOG(LogTemp, Error, TEXT("Failed to create lobby: %d"), pCallback->m_eResult);
+        return;
+    }
 
-        //Register player
-        RegisterPlayer(SessionName);
+    CSteamID LobbyID = CSteamID(pCallback->m_ulSteamIDLobby);
+    UE_LOG(LogTemp, Log, TEXT("Lobby created successfully: %llu"), LobbyID.ConvertToUint64());
 
-        // Player is a host
-        bIsHost = true;
+    // Set up lobby data
+    SteamMatchmaking()->SetLobbyData(LobbyID, "GameKey", "urbanshadows");
+    SteamMatchmaking()->SetLobbyData(LobbyID, "Region", "Auto");
+    SteamMatchmaking()->SetLobbyData(LobbyID, "MapName", "/Game/Maps/Map_Lobby"); // Set the map in lobby data
 
-        // Add the host to the lobby
-        FPlayerLobbyInfo HostPlayer;
-        HostPlayer.PlayerName = TEXT("HostName");  // Fetch from Steam API
-        HostPlayer.PlayerAvatar = nullptr;  // Placeholder for now
-        HostPlayer.bIsReady = false;
+    // Travel to the map
+    FString LobbyMap = SteamMatchmaking()->GetLobbyData(LobbyID, "MapName");
 
-        PlayerLobbyInfoArray.Add(HostPlayer);
+    // Check if the map name is valid
+    if (!LobbyMap.IsEmpty())
+    {
+        // Ensure the map path includes the correct format and append ?listen
+        FString TravelCommand = FString::Printf(TEXT("%s?listen"), *LobbyMap);
 
-        IOnlineSubsystem* OnlineSubsystemInstance = IOnlineSubsystem::Get();
-        if (OnlineSubsystemInstance)
+        // Log the travel command
+        UE_LOG(LogTemp, Log, TEXT("Attempting to travel to: %s"), *TravelCommand);
+
+        // Check if the map exists before traveling
+        if (FPackageName::DoesPackageExist(LobbyMap))
         {
-            IOnlineSessionPtr SessionInterface = OnlineSubsystemInstance->GetSessionInterface();
-            if (SessionInterface.IsValid())
+            // Ensure GetWorld() is valid before calling ServerTravel
+            if (GetWorld())
             {
-                FString MapName;
-                if (IOnlineSubsystem::Get()->GetSessionInterface()->GetSessionSettings(SessionName)->Get(FName("MapName"), MapName))
-                {
-                    GetWorld()->ServerTravel(MapName);
-                    UE_LOG(LogTemp, Warning, TEXT("Map traveled: %s"), *MapName);
-                }
-                else
-                {
-                    UE_LOG(LogTemp, Error, TEXT("Failed to travel to map"));
-                }
+                GetWorld()->ServerTravel(TravelCommand);
             }
             else
             {
-                 UE_LOG(LogTemp, Error, TEXT("SessionInterface is invalid!"));
+                UE_LOG(LogTemp, Error, TEXT("World is not valid, cannot travel."));
             }
         }
         else
         {
-            UE_LOG(LogTemp, Error, TEXT("OnlineSubsystem is not available!"));
+            UE_LOG(LogTemp, Error, TEXT("Map does not exist: %s"), *LobbyMap);
         }
     }
     else
     {
-        UE_LOG(LogTemp, Error, TEXT("Failed to create session: %s"), *SessionName.ToString());
+        UE_LOG(LogTemp, Warning, TEXT("No map name found in lobby data."));
     }
 }
 // - 2.3 - //
-void USteamInitializer::FindGames(int32 numberOfGames, FString InGameSessionID, bool UsingGameSessionID)
+void USteamMultiplayer::OnLobbyEntered(LobbyEnter_t* pCallback)
 {
-    IOnlineSubsystem* OnlineSubsystemInstance = IOnlineSubsystem::Get();
-    if (OnlineSubsystemInstance)
+    if (pCallback->m_EChatRoomEnterResponse != k_EChatRoomEnterResponseSuccess)
     {
-        IOnlineSessionPtr SessionInterface = OnlineSubsystemInstance->GetSessionInterface();
-        if (SessionInterface.IsValid())
-        {
-            // Create search settings for the session search
-            CurrentSearchSettings = MakeShared<FOnlineSessionSearch>();
-            CurrentSearchSettings->MaxSearchResults = numberOfGames;
-            CurrentSearchSettings->QuerySettings.Set(SEARCH_PRESENCE, true, EOnlineComparisonOp::Equals);
-
-            // Clear previous results
-            FoundSessions.Empty();
-
-            // Add a custom filter to search for sessions with the key "urbanshadows"
-            CurrentSearchSettings->QuerySettings.Set(FName("GameKey"), FString("urbanshadows"), EOnlineComparisonOp::Equals);
-            if (UsingGameSessionID)
-            {
-                CurrentSearchSettings->QuerySettings.Set(FName("GameSessionID"), InGameSessionID, EOnlineComparisonOp::Equals);
-            }
-
-            // Start the session search
-            bool bSearchStarted = SessionInterface->FindSessions(0, CurrentSearchSettings.ToSharedRef());
-
-            if (bSearchStarted)
-            {
-                // Bind the callback for when the session search completes
-                SessionInterface->AddOnFindSessionsCompleteDelegate_Handle(
-                    FOnFindSessionsCompleteDelegate::CreateUObject(this, &USteamInitializer::OnFindSessionsComplete)
-                );
-            }
-            else
-            {
-                UE_LOG(LogTemp, Error, TEXT("Failed to start session search."));
-            }
-        }
-    }
-}
-// - 2.4 - //
-void USteamInitializer::OnFindSessionsComplete(bool bSuccess)
-{
-    if (bSuccess && CurrentSearchSettings.IsValid())
-    {
-        FoundSessions = CurrentSearchSettings->SearchResults;
-        UE_LOG(LogTemp, Warning, TEXT("Found %d sessions."), FoundSessions.Num());
-
-        // Filter sessions by their state (only keep InProgress sessions)
-        TArray<FOnlineSessionSearchResult> InProgressSessions;
-
-        IOnlineSubsystem* OnlineSubsystemInstance = IOnlineSubsystem::Get();
-        if (OnlineSubsystemInstance)
-        {
-            IOnlineSessionPtr SessionInterface = OnlineSubsystemInstance->GetSessionInterface();
-            if (SessionInterface.IsValid())
-            {
-                for (const auto& Session : FoundSessions)
-                {
-                    // Check session state
-                    FString temp;
-                    Session.Session.SessionSettings.Get(FName("SESSION_NAME"), temp);
-                    EOnlineSessionState::Type SessionState = SessionInterface->GetSessionState((*temp));
-
-                    if (SessionState == EOnlineSessionState::InProgress)
-                    {
-                        // Only add sessions that are in the "InProgress" state
-                        FString GameKey;
-                        if (Session.Session.SessionSettings.Get(FName("GameKey"), GameKey))
-                        {
-                            UE_LOG(LogTemp, Warning, TEXT("Session found with GameKey: %s"), *GameKey);
-
-                            // Optionally check if this session belongs to the host
-                            if (Session.Session.OwningUserId.IsValid())
-                            {
-                                FString HostName = Session.Session.OwningUserId->ToString();
-                                UE_LOG(LogTemp, Warning, TEXT("Session host: %s"), *HostName);
-                                // Set bIsHost based on the player's role (if needed)
-                                bIsHost = false; // Assuming the client is joining and not hosting
-                            }
-                        }
-                        InProgressSessions.Add(Session);
-                    }
-                }
-            }
-        }
-
-        // Log filtered sessions
-        UE_LOG(LogTemp, Warning, TEXT("Found %d InProgress sessions."), InProgressSessions.Num());
-
-        // Optionally, send these sessions to Blueprint
-        // You can set the filtered sessions to a Blueprint variable or process them further here
-
-    }
-    else
-    {
-        UE_LOG(LogTemp, Error, TEXT("FindSessions failed."));
-    }
-}
-// - 2.5 - //
-TArray<FCustomBlueprintSessionResult> USteamInitializer::GetFoundSessions() const
-{
-    TArray<FCustomBlueprintSessionResult> BlueprintResults;
-
-    // Loop through each found session
-    for (const auto& Session : FoundSessions)
-    {
-        FCustomBlueprintSessionResult Result;
-
-        // Set session details
-        Result.OwnerName = Session.Session.OwningUserName;
-        Result.MaxPlayers = Session.Session.SessionSettings.NumPublicConnections;
-        Result.CurrentPlayers = Result.MaxPlayers - Session.Session.NumOpenPublicConnections;
-        Session.Session.SessionSettings.Get(FName("SESSION_NAME"), Result.SessionName);
-
-        // Add the result to the array
-        BlueprintResults.Add(Result);
-    }
-
-    return BlueprintResults;
-}
-// - 2.6 - //
-void USteamInitializer::JoinGame(int32 SessionIndex, FName SessionName)
-{
-    IOnlineSubsystem* OnlineSubsystemInstance = IOnlineSubsystem::Get();
-    if (!OnlineSubsystemInstance)
-    {
-        UE_LOG(LogTemp, Error, TEXT("OnlineSubsystem is not available!"));
+        UE_LOG(LogTemp, Error, TEXT("Failed to enter lobby. Response: %d"), pCallback->m_EChatRoomEnterResponse);
         return;
     }
-    else
-    {
 
-        IOnlineSessionPtr SessionInterface = OnlineSubsystemInstance->GetSessionInterface();
-        if (!SessionInterface.IsValid())
+    UE_LOG(LogTemp, Log, TEXT("Successfully entered lobby: %llu"), pCallback->m_ulSteamIDLobby);
+
+    // Check if the world is valid before traveling
+    UWorld* CurrentWorld = GetWorld();
+    if (CurrentWorld)
+    {
+        // Log the map name before traveling
+        FString MapName = "/Game/Maps/Map_Lobby"; // This should match the actual map you're trying to travel to
+        UE_LOG(LogTemp, Log, TEXT("Attempting to travel to map: %s"), *MapName);
+
+        // Check if the map exists
+        if (FPackageName::DoesPackageExist(MapName))
         {
-            UE_LOG(LogTemp, Error, TEXT("SessionInterface is invalid!"));
-            return;
+            CurrentWorld->ServerTravel(MapName);
+            UE_LOG(LogTemp, Log, TEXT("ServerTravel to %s was successful."), *MapName);
         }
         else
         {
-            if (!FoundSessions.IsValidIndex(SessionIndex))
-            {
-                UE_LOG(LogTemp, Error, TEXT("Invalid session index: %d"), SessionIndex);
-                return;
-            }
-            else
-            {
-                const FOnlineSessionSearchResult& SessionToJoin = FoundSessions[SessionIndex];
-                FoundSessions[SessionIndex].Session.SessionSettings.bUsesPresence = true; // Enable presence for Steam
-                FoundSessions[SessionIndex].Session.SessionSettings.bUseLobbiesIfAvailable = true; // Use Steam lobbies if possible
-
-                // Log session details for debugging
-                UE_LOG(LogTemp, Warning, TEXT("Joining Session %d: Owner = %s, Ping = %d ms, Players = %d/%d"),
-                    SessionIndex,
-                    *SessionToJoin.Session.OwningUserName,
-                    SessionToJoin.PingInMs,
-                    SessionToJoin.Session.SessionSettings.NumPublicConnections - SessionToJoin.Session.NumOpenPublicConnections,
-                    SessionToJoin.Session.SessionSettings.NumPublicConnections);
-                // Retrieve the unique GameSessionName
-                if (SessionToJoin.Session.SessionSettings.Get(FName("SESSION_NAME"), RandomName))
-                {
-                    UE_LOG(LogTemp, Warning, TEXT("Found session with Session Name: %s"), *RandomName);
-                }
-                // Retrieve the unique GameSessionID
-                if (SessionToJoin.Session.SessionSettings.Get(FName("GameSessionID"), GameSessionID))
-                {
-                    UE_LOG(LogTemp, Warning, TEXT("Found session with GameSessionID: %s"), *GameSessionID);
-                }
-
-                // Bind the delegate to handle completion of the join session request
-                SessionInterface->AddOnJoinSessionCompleteDelegate_Handle(
-                    FOnJoinSessionCompleteDelegate::CreateUObject(this, &USteamInitializer::OnJoinSessionComplete)
-                );
-
-                // Attempt to join the session
-                if (!SessionInterface->JoinSession(0, NAME_GameSession, SessionToJoin))
-                {
-                    UE_LOG(LogTemp, Error, TEXT("Failed to initiate JoinSession for index: %d"), SessionIndex);
-                }
-            }
-        }
-    }
-}
-// - 2.7 - //
-void USteamInitializer::OnJoinSessionComplete(FName SessionName, EOnJoinSessionCompleteResult::Type Result)
-{
-    if (Result == EOnJoinSessionCompleteResult::Success)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("Successfully joined session: %s"), *SessionName.ToString());
-
-        // Register player
-        RegisterPlayer(SessionName);
-
-        // Example: Add a new player to the lobby array
-        FPlayerLobbyInfo NewPlayer;
-        NewPlayer.PlayerName = TEXT("Guest");  // Fetch from Steam API or session details
-        NewPlayer.PlayerAvatar = nullptr;  // Placeholder for now
-        NewPlayer.bIsReady = false;
-
-        PlayerLobbyInfoArray.Add(NewPlayer);
-        BroadcastLobbyUpdate();
-
-        // Retrieve the connection string
-        IOnlineSubsystem* OnlineSubsystemInstance = IOnlineSubsystem::Get();
-        if (OnlineSubsystemInstance)
-        {
-            IOnlineSessionPtr SessionInterface = OnlineSubsystemInstance->GetSessionInterface();
-            if (SessionInterface.IsValid())
-            {
-                FString ConnectInfo;
-                if (SessionInterface->GetResolvedConnectString(SessionName, ConnectInfo))
-                {
-                    UE_LOG(LogTemp, Warning, TEXT("Connect Info: %s"), *ConnectInfo);
-
-                    // Travel to the session
-                    APlayerController* PlayerController = GetWorld()->GetFirstPlayerController();
-                    if (PlayerController)
-                    {
-                        UE_LOG(LogTemp, Warning, TEXT("Client traveling to session..."));
-                        PlayerController->ClientTravel(ConnectInfo, ETravelType::TRAVEL_Absolute);
-                    }
-
-                    // Handle session role (client will be joining, so no changes to the session)
-                    bIsHost = false; // Mark this player as a client
-                }
-                else
-                {
-                    UE_LOG(LogTemp, Error, TEXT("Failed to get connection string for session: %s"), *SessionName.ToString());
-                }
-            }
+            UE_LOG(LogTemp, Error, TEXT("Map %s does not exist or is not packaged."), *MapName);
         }
     }
     else
     {
-        // Handle the failure as before
-        FString FailureReason;
-        switch (Result)
-        {
-        case EOnJoinSessionCompleteResult::SessionIsFull:
-            FailureReason = "Session is full.";
-            break;
-        case EOnJoinSessionCompleteResult::SessionDoesNotExist:
-            FailureReason = "Session does not exist.";
-            break;
-        case EOnJoinSessionCompleteResult::CouldNotRetrieveAddress:
-            FailureReason = "Could not retrieve connection address.";
-            break;
-        default:
-            FailureReason = "Unknown error.";
-            break;
-        }
-
-        UE_LOG(LogTemp, Error, TEXT("Failed to join session: %s, Reason: %s"), *SessionName.ToString(), *FailureReason);
+        UE_LOG(LogTemp, Error, TEXT("World is not valid, cannot travel."));
     }
 }
-////////////////////////////
-// 3. In lobby mechanics //
-//////////////////////////////////////////////
-// -3.1 Updating player info               //
-// -3.2 Check if all players are ready    //    
-// -3.3 Start game                       //
-// -3.4 Ready Up                        //
-// -3.5 Broadcast Data                 //
-////////////////////////////////////////
+///////////////////////
+// 3. Finding Games //
+////////////////////////////////////////////////////////////////////////
+// 3.1 - Find lobbies with specified settings, example: region, tag  //
+// 3.2 - Callback: Found lobbies                                    //
+// 3.3 - Join lobby by using LobbyID                               //
+////////////////////////////////////////////////////////////////////
 // - 3.1 - //
-void USteamInitializer::UpdatePlayerInfo(const FString& PlayerName, UTexture2D* PlayerAvatar, bool bIsReady)
+void USteamMultiplayer::FindLobbiesWithSettings(FString Tag, FString Region)
 {
-    FPlayerLobbyInfo PlayerInfo;
-    PlayerInfo.PlayerName = PlayerName;
-    PlayerInfo.PlayerAvatar = PlayerAvatar;
-    PlayerInfo.bIsReady = bIsReady;
+    if (!SteamAPI_IsSteamRunning())
+    {
+        UE_LOG(LogTemp, Error, TEXT("Steam API is not initialized."));
+        return;
+    }
 
-    // Update player info in the session or local list
-    PlayerLobbyInfoMap.Add(PlayerName, PlayerInfo);
+    ISteamMatchmaking* SteamMatchmakingTemp = SteamMatchmaking();
+    if (!SteamMatchmakingTemp)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Steam Matchmaking interface is not available!"));
+        return;
+    }
+
+    // Reset the lobby array before searching
+    FoundLobbies.Empty();
+
+    // Add search filters for the tag and region
+    SteamMatchmakingTemp->AddRequestLobbyListStringFilter("GameKey", TCHAR_TO_UTF8(*Tag), k_ELobbyComparisonEqual);
+    //SteamMatchmakingTemp->AddRequestLobbyListStringFilter("Region", TCHAR_TO_UTF8(*Region), k_ELobbyComparisonEqual);
+
+    // Request the list of lobbies
+    SteamAPICall_t SearchCall = SteamMatchmakingTemp->RequestLobbyList();
+    UE_LOG(LogTemp, Log, TEXT("Lobby search requested for tag: %s, region: %s"), *Tag, *Region);
 }
 // - 3.2 - //
-bool USteamInitializer::AreAllPlayersReady() const
+void USteamMultiplayer::OnLobbyListReceived(LobbyMatchList_t* pCallback)
 {
-    for (const auto& Player : PlayerLobbyInfoMap)
+    if (pCallback->m_nLobbiesMatching == 0)
     {
-        if (!Player.Value.bIsReady)
-        {
-            return false;
-        }
+        UE_LOG(LogTemp, Log, TEXT("No matching lobbies found."));
+        return;
     }
-    return true;
+
+    // Loop through the found lobbies and store their info
+    for (uint32 i = 0; i < pCallback->m_nLobbiesMatching; ++i)
+    {
+        CSteamID LobbyID = SteamMatchmaking()->GetLobbyByIndex(i);
+        FString LobbyIDStringTemp = FString::Printf(TEXT("%llu"), LobbyID.ConvertToUint64());
+        FString HostName = UTF8_TO_TCHAR(SteamMatchmaking()->GetLobbyData(LobbyID, "name"));
+        int32 CurrentPlayers = SteamMatchmaking()->GetNumLobbyMembers(LobbyID);
+        FString MaxPlayersStr = SteamMatchmaking()->GetLobbyData(LobbyID, "maxplayers");
+        int32 MaxPlayers = FCString::Atoi(*MaxPlayersStr);
+        FString Region = UTF8_TO_TCHAR(SteamMatchmaking()->GetLobbyData(LobbyID, "Region"));
+        FString MapName = UTF8_TO_TCHAR(SteamMatchmaking()->GetLobbyData(LobbyID, "MapName"));
+
+        // Create a lobby struct and add it to the array
+        FLobbyInfoData LobbyInfo;
+        LobbyInfo.HostName = HostName;
+        LobbyInfo.CurrentPlayers = CurrentPlayers;
+        LobbyInfo.MaxPlayers = MaxPlayers;
+        LobbyInfo.Region = Region;
+        LobbyInfo.MapName = MapName;
+        LobbyInfo.LobbyIDString = LobbyIDStringTemp;
+
+        FoundLobbies.Add(LobbyInfo);
+    }
+
+    // Notify UI about the found lobbies (optional)
+    //OnLobbiesFound.Broadcast();
 }
 // - 3.3 - //
-void USteamInitializer::StartGame()
+void USteamMultiplayer::JoinLobby(FString LobbyID)
 {
-    if (AreAllPlayersReady())
+    if (!SteamAPI_IsSteamRunning())
     {
-        // Logic to start the game
-        // Transition to the game map or notify everyone
+        UE_LOG(LogTemp, Error, TEXT("Steam API is not initialized."));
+        return;
     }
-}
-// - 3.4 - //
-void USteamInitializer::SetPlayerReadyStatus(const FString& PlayerName, bool bIsReady)
-{
-    for (FPlayerLobbyInfo& Player : PlayerLobbyInfoArray)
+
+    ISteamMatchmaking* SteamMatchmakingTemp = SteamMatchmaking();
+    if (!SteamMatchmakingTemp)
     {
-        if (Player.PlayerName == PlayerName)
-        {
-            Player.bIsReady = bIsReady;
-            break;
-        }
+        UE_LOG(LogTemp, Error, TEXT("Steam Matchmaking interface is not available!"));
+        return;
     }
+
+    FString LobbyIDStringTemp = LobbyID;
+    uint64 LobbyIDNumeric = FCString::Strtoui64(*LobbyIDStringTemp, nullptr, 10);
+    CSteamID LobbyIDSteamFormat((uint64)LobbyIDNumeric);
+    SteamMatchmaking()->JoinLobby(LobbyIDSteamFormat);
+    UE_LOG(LogTemp, Log, TEXT("Attempting to join lobby: %llu"), LobbyIDSteamFormat.ConvertToUint64());
 }
-// - 3.5 - //
-void USteamInitializer::BroadcastLobbyUpdate()
-{
-    // Iterate over all player controllers in the world
-    for (auto It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
-    {
-        // Retrieve the player controller
-        APlayerController* BaseController = It->Get();
-        if (BaseController)
-        {
-            // Cast to your custom SteamPlayerController class
-            if (ASteamPlayerController* SteamController = Cast<ASteamPlayerController>(BaseController))
-            {
-                // Call the custom client function to update the lobby
-                SteamController->ClientUpdateLobby(PlayerLobbyInfoArray);
-            }
-        }
-    }
-}
-///////////////////////////////////////////
-// MORE COMING SOON  // A.S. - hajddeen //
-/////////////////////////////////////////
