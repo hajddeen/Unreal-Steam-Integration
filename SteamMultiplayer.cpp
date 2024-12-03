@@ -9,7 +9,41 @@
 //              |_  |_
 ////////////////////////////////////////////////////////////
 // STEAM P2P SESSIONS - Unreal 5.5 + Steamworks SDK 1.57 //
-//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////
+// LICENSE AGREEMENT // LICENSE AGREEMENT // LICENSE AGREEMENT //
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                                                                                                                                                                                                                                          //
+// Last Updated: 03/12/2024                                                                                                                                                                                                                                //
+//                                                                                                                                                                                                                                                        //
+// 1. Grant of License                                                                                                                                                                                                                                   //
+// This license permits anyone to use, modify, and distribute the provided code (the "Code") in projects free of charge under the following conditions:                                                                                                 //
+// 1.1. The Code must only be used for lawful purposes.                                                                                                                                                                                                //
+// 1.2. The user must include proper credit in their project as described in Section 3 below.                                                                                                                                                         //
+//                                                                                                                                                                                                                                                   //
+// 2. Restrictions                                                                                                                                                                                                                                  //
+// 2.1. This Code cannot be sold, sublicensed, or redistributed as a standalone product or as part of a similar development toolkit.                                                                                                               //
+// 2.2. The Code must not be used for projects that violate local laws or promote harmful, discriminatory, or illegal activities.                                                                                                                 //
+// 2.3. The user must not remove, alter, or obscure this license agreement, attribution requirements, or copyright notices within the Code.                                                                                                      //
+//                                                                                                                                                                                                                                              //
+// 3. Attribution                                                                                                                                                                                                                              //
+// 3.1. The user must include the following credit in a visible location within their project (e.g., splash screen, credits screen, or documentation):                                                                                        //
+// "Steam Multiplayer Code developed by Adrian Szajewski. Used under license."                                                                                                                                                               //
+// 3.2. For distributed or published projects, a link to https://adrianszajewskidev.wordpress.com/ or other contact details must also be included if applicable.                                                                            //
+//                                                                                                                                                                                                                                         //
+// 4. Breach of Agreement                                                                                                                                                                                                                 //
+// 4.1. If this license is violated, the licensor reserves the right to revoke the user's rights to use the Code immediately.                                                                                                            //
+// 4.2. The licensor may take legal action to recover damages or enforce compliance, depending on the severity of the violation.                                                                                                        //
+// 4.3. Users found in breach of this license may be required to:                                                                                                                                                                      //
+// Remove the Code from their project(s).                                                                                                                                                                                             //
+// Cease distribution of any projects using the Code.                                                                                                                                                                                //
+//                                                                                                                                                                                                                                  //
+// 5. Disclaimer                                                                                                                                                                                                                   //
+// 5.1. The Code is provided "as is" without any warranty, express or implied. The licensor is not liable for any damages arising from the use or misuse of the Code.                                                             //
+// 5.2. It is the user's responsibility to ensure compatibility and safe usage of the Code in their projects.                                                                                                                    //
+//                                                                                                                                                                                                                              //
+// 6. Governing Law                                                                                                                                                                                                            //
+// This agreement shall be governed and construed in accordance with the laws of Poland. Any disputes arising under or in connection with this license will be subject to the exclusive jurisdiction of the courts of Poland. //
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // HOW TO USE? //
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 // 1. It is game instance class                                                                       //
@@ -306,6 +340,7 @@ void USteamMultiplayer::JoinLobby(FString LobbyID)
             uint64 LobbyIDNumeric = FCString::Strtoui64(*LobbyIDStringTemp, nullptr, 10);
             CSteamID LobbyIDSteamFormat((uint64)LobbyIDNumeric);
             LobbyIDString = LobbyID;
+            bIsHost = false;
             SteamMatchmaking()->JoinLobby(LobbyIDSteamFormat);
             UE_LOG(LogTemp, Log, TEXT("Attempting to join lobby: %llu"), LobbyIDSteamFormat.ConvertToUint64());
         }
@@ -320,36 +355,28 @@ void USteamMultiplayer::JoinLobby(FString LobbyID)
 // - 4.1 - //
 TArray<FLobbyPlayerInfo> USteamMultiplayer::GetLobbyMembersWithAvatars()
 {
-    if (!SteamAPI_IsSteamRunning())
+    TArray<FLobbyPlayerInfo> PlayerInfos;
+
+    FString LobbyIDStringTemp = LobbyIDString;
+    uint64 LobbyIDNumeric = FCString::Strtoui64(*LobbyIDStringTemp, nullptr, 10);
+    CSteamID LobbyIDSteamFormat((uint64)LobbyIDNumeric);
+
+    int32 NumMembers = SteamMatchmaking()->GetNumLobbyMembers(LobbyIDSteamFormat);
+    for (int32 i = 0; i < NumMembers; ++i)
     {
-        UE_LOG(LogTemp, Error, TEXT("Steam API is not initialized."));
-        return;
+        CSteamID MemberID = SteamMatchmaking()->GetLobbyMemberByIndex(LobbyIDSteamFormat, i);
+        FLobbyPlayerInfo PlayerInfo;
+
+        const char* Name = SteamFriends()->GetFriendPersonaName(MemberID);
+        PlayerInfo.PlayerName = Name ? FString(Name) : TEXT("Unknown");
+
+        int AvatarHandle = SteamFriends()->GetLargeFriendAvatar(MemberID);
+        PlayerInfo.PlayerAvatar = AvatarHandle != -1 ? GetAvatarTexture(AvatarHandle) : nullptr;
+
+        PlayerInfos.Add(PlayerInfo);
     }
-    else
-    {
-        TArray<FLobbyPlayerInfo> PlayerInfos;
 
-        FString LobbyIDStringTemp = LobbyIDString;
-        uint64 LobbyIDNumeric = FCString::Strtoui64(*LobbyIDStringTemp, nullptr, 10);
-        CSteamID LobbyIDSteamFormat((uint64)LobbyIDNumeric);
-
-        int32 NumMembers = SteamMatchmaking()->GetNumLobbyMembers(LobbyIDSteamFormat);
-        for (int32 i = 0; i < NumMembers; ++i)
-        {
-            CSteamID MemberID = SteamMatchmaking()->GetLobbyMemberByIndex(LobbyIDSteamFormat, i);
-            FLobbyPlayerInfo PlayerInfo;
-
-            const char* Name = SteamFriends()->GetFriendPersonaName(MemberID);
-            PlayerInfo.PlayerName = Name ? FString(Name) : TEXT("Unknown");
-
-            int AvatarHandle = SteamFriends()->GetLargeFriendAvatar(MemberID);
-            PlayerInfo.PlayerAvatar = AvatarHandle != -1 ? GetAvatarTexture(AvatarHandle) : nullptr;
-
-            PlayerInfos.Add(PlayerInfo);
-        }
-
-        return PlayerInfos;
-    }
+    return PlayerInfos;
 }
 // - 4.2 - //
 UTexture2D* USteamMultiplayer::GetAvatarTexture(int AvatarHandle)
